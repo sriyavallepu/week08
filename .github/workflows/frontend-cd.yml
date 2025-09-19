@@ -24,7 +24,6 @@ on:
       aks_resource_group:  { type: string, required: true }
 
 env:
-  # Avoid newline/secret formatting issues
   ACR_LOGIN_SERVER: week8regisry.azurecr.io
 
 jobs:
@@ -51,32 +50,24 @@ jobs:
         run: |
           set -e
           FILE="frontend/main.js"
-
           echo "Working dir: $(pwd)"
           ls -la frontend || true
-
           if [[ ! -f "$FILE" ]]; then
             echo "ERROR: $FILE not found"
             exit 1
           fi
-
-          # Replace placeholders if they exist
           sed -i "s|_PRODUCT_API_URL_|${{ inputs.product_api_ip }}|g" "$FILE" || true
           sed -i "s|_ORDER_API_URL_|${{ inputs.order_api_ip }}|g" "$FILE" || true
-
-          # Update or append constants (handles both patterns)
           if grep -qE '^const[[:space:]]+PRODUCT_IP' "$FILE"; then
             sed -i -E 's|^const[[:space:]]+PRODUCT_IP.*|const PRODUCT_IP = "'"${{ inputs.product_api_ip }}"'";|' "$FILE"
           else
             echo 'const PRODUCT_IP = "'"${{ inputs.product_api_ip }}"'";' >> "$FILE"
           fi
-
           if grep -qE '^const[[:space:]]+ORDER_IP' "$FILE"; then
             sed -i -E 's|^const[[:space:]]+ORDER_IP.*|const ORDER_IP = "'"${{ inputs.order_api_ip }}"'";|' "$FILE"
           else
             echo 'const ORDER_IP = "'"${{ inputs.order_api_ip }}"'";' >> "$FILE"
           fi
-
           echo "Final values (non-fatal grep):"
           grep -nE 'PRODUCT_IP|ORDER_IP' "$FILE" || true
 
@@ -87,8 +78,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.AZURE_CLIENT_ID }}
-          password: ${{ secrets.AZURE_CLIENT_SECRET }}
+          username: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
+          password: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
 
       - name: Build & push FRONTEND image
         uses: docker/build-push-action@v5
