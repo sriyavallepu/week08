@@ -1,6 +1,8 @@
 # week08/.github/workflows/backend_ci.yml
 # trigger: manual change to run CI
 #commit for the workflow
+# trigger run - sriya test
+
 
 name: Backend CI - Test, Build and Push Images to ACR
 
