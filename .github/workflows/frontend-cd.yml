@@ -24,7 +24,7 @@ on:
       aks_resource_group:  { type: string, required: true }
 
 env:
-  # Hardcode to avoid newline/secret formatting issues
+  # Avoid newline/secret formatting issues
   ACR_LOGIN_SERVER: week8regisry.azurecr.io
 
 jobs:
@@ -47,16 +47,38 @@ jobs:
           cluster-name: ${{ inputs.aks_cluster_name }}
 
       - name: Inject Backend IPs into frontend/main.js
+        shell: bash
         run: |
           set -e
-          if grep -q "_PRODUCT_API_URL_" frontend/main.js; then
-            sed -i "s|_PRODUCT_API_URL_|${{ inputs.product_api_ip }}|g" frontend/main.js
-            sed -i "s|_ORDER_API_URL_|${{ inputs.order_api_ip }}|g" frontend/main.js
-          else
-            sed -i -E 's|^const PRODUCT_IP.*|const PRODUCT_IP = "'"${{ inputs.product_api_ip }}"'";|' frontend/main.js
-            sed -i -E 's|^const ORDER_IP.*|const ORDER_IP = "'"${{ inputs.order_api_ip }}"'";|' frontend/main.js
+          FILE="frontend/main.js"
+
+          echo "Working dir: $(pwd)"
+          ls -la frontend || true
+
+          if [[ ! -f "$FILE" ]]; then
+            echo "ERROR: $FILE not found"
+            exit 1
           fi
-          echo "Final values:" && grep -nE 'PRODUCT_IP|ORDER_IP' frontend/main.js
+
+          # Replace placeholders if they exist
+          sed -i "s|_PRODUCT_API_URL_|${{ inputs.product_api_ip }}|g" "$FILE" || true
+          sed -i "s|_ORDER_API_URL_|${{ inputs.order_api_ip }}|g" "$FILE" || true
+
+          # Update or append constants (handles both patterns)
+          if grep -qE '^const[[:space:]]+PRODUCT_IP' "$FILE"; then
+            sed -i -E 's|^const[[:space:]]+PRODUCT_IP.*|const PRODUCT_IP = "'"${{ inputs.product_api_ip }}"'";|' "$FILE"
+          else
+            echo 'const PRODUCT_IP = "'"${{ inputs.product_api_ip }}"'";' >> "$FILE"
+          fi
+
+          if grep -qE '^const[[:space:]]+ORDER_IP' "$FILE"; then
+            sed -i -E 's|^const[[:space:]]+ORDER_IP.*|const ORDER_IP = "'"${{ inputs.order_api_ip }}"'";|' "$FILE"
+          else
+            echo 'const ORDER_IP = "'"${{ inputs.order_api_ip }}"'";' >> "$FILE"
+          fi
+
+          echo "Final values (non-fatal grep):"
+          grep -nE 'PRODUCT_IP|ORDER_IP' "$FILE" || true
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
