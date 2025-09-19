@@ -1,4 +1,6 @@
 # week08/.github/workflows/backend_ci.yml
+# trigger: manual change to run CI
+
 
 name: Backend CI - Test, Build and Push Images to ACR
 
