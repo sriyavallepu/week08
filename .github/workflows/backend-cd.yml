@@ -6,11 +6,9 @@ on:
     branches: [ main ]
 
 env:
-  # your ACR + namespace
   ACR_LOGIN_SERVER: week9acr.azurecr.io
   IMAGE_TAG: ${{ github.sha }}
   NS: shop
-  # AKS details
   AZ_RG: deakinuni
   AKS_NAME: week9aks
 
@@ -29,58 +27,41 @@ jobs:
 
       - name: Get AKS context
         run: |
-          az aks get-credentials --resource-group $AZ_RG --name $AKS_NAME --overwrite-existing
+          az aks get-credentials --resource-group "$AZ_RG" --name "$AKS_NAME" --overwrite-existing
+          kubectl version --client=true
 
-      # 👇 Paste here
+      - name: Ensure namespace exists
+        run: |
+          kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Apply Kubernetes manifests (db + services + secrets)
         run: |
-          kubectl apply -n $NS -f k8s/secrets.yaml
-          kubectl apply -n $NS -f k8s/product-db.yaml
-          kubectl apply -n $NS -f k8s/order-db.yaml
-          kubectl apply -n $NS -f k8s/product-service.yaml
-          kubectl apply -n $NS -f k8s/order-service.yaml
+          kubectl apply -n "$NS" -f k8s/secrets.yaml
+          kubectl apply -n "$NS" -f k8s/product-db.yaml
+          kubectl apply -n "$NS" -f k8s/order-db.yaml
+          kubectl apply -n "$NS" -f k8s/product-service.yaml
+          kubectl apply -n "$NS" -f k8s/order-service.yaml
 
-      # Pin deployments to the exact commit SHA images that CI built
-      - name: Set backend images to exact SHA (auto-detect names)
-  shell: bash
-  run: |
-    set -euo pipefail
+      - name: Set backend images to exact SHA
+        run: |
+          kubectl set image deploy/product-service -n "$NS" product=${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.IMAGE_TAG }}
+          kubectl set image deploy/order-service   -n "$NS" order=${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.IMAGE_TAG }}
 
-    echo "==> Listing deployments in namespace $NS"
-    kubectl get deploy -n "$NS" -o wide
+      - name: Wait for rollout (product & order)
+        run: |
+          kubectl rollout status deploy/product-service -n "$NS" --timeout=180s
+          kubectl rollout status deploy/order-service   -n "$NS" --timeout=180s
 
-    # --- Find product deployment & container ---
-    PROD_DEPLOY=$(kubectl get deploy -n "$NS" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -Ei 'product|products' | head -n1)
-    if [[ -z "${PROD_DEPLOY:-}" ]]; then
-      echo "ERROR: Could not find product deployment (name containing 'product')."; exit 1
-    fi
-    PROD_CONTAINER=$(kubectl get deploy "$PROD_DEPLOY" -n "$NS" -o jsonpath='{.spec.template.spec.containers[0].name}')
-    echo "Product deploy: $PROD_DEPLOY | container: $PROD_CONTAINER"
+      - name: Show service IPs
+        run: |
+          kubectl get svc -n "$NS" -o wide
 
-    # --- Find order deployment & container ---
-    ORDER_DEPLOY=$(kubectl get deploy -n "$NS" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -Ei 'order|orders' | head -n1)
-    if [[ -z "${ORDER_DEPLOY:-}" ]]; then
-      echo "ERROR: Could not find order deployment (name containing 'order')."; exit 1
-    fi
-    ORDER_CONTAINER=$(kubectl get deploy "$ORDER_DEPLOY" -n "$NS" -o jsonpath='{.spec.template.spec.containers[0].name}')
-    echo "Order deploy: $ORDER_DEPLOY | container: $ORDER_CONTAINER"
-
-    # --- Set images to the exact SHA tag built in CI ---
-    PROD_IMG="${ACR_LOGIN_SERVER}/product_service:${IMAGE_TAG}"
-    ORDER_IMG="${ACR_LOGIN_SERVER}/order_service:${IMAGE_TAG}"
-
-    echo "Setting product image: $PROD_IMG"
-    kubectl set image deploy/"$PROD_DEPLOY" -n "$NS" "$PROD_CONTAINER"="$PROD_IMG"
-
-    echo "Setting order image:   $ORDER_IMG"
-    kubectl set image deploy/"$ORDER_DEPLOY" -n "$NS" "$ORDER_CONTAINER"="$ORDER_IMG"
-    
-    - name: Wait for rollout (auto-detect product & order)
-  shell: bash
-  run: |
-    set -euo pipefail
-    PROD_DEPLOY=$(kubectl get deploy -n "$NS" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -Ei 'product|products' | head -n1)
-    ORDER_DEPLOY=$(kubectl get deploy -n "$NS" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -Ei 'order|orders' | head -n1)
-
-    kubectl rollout status deploy/"$PROD_DEPLOY" -n "$NS" --timeout=180s
-    kubectl rollout status deploy/"$ORDER_DEPLOY" -n "$NS" --timeout=180s
+      - name: Smoke test product & order
+        run: |
+          set -e
+          PROD_IP=$(kubectl get svc product-service -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          ORDER_IP=$(kubectl get svc order-service   -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "PRODUCT → http://$PROD_IP:8000"
+          echo "ORDER   → http://$ORDER_IP:8001"
+          curl -sS -I "http://$PROD_IP:8000"  | head -n1
+          curl -sS -I "http://$ORDER_IP:8001" | head -n1
