@@ -1,101 +1,70 @@
-name: CD - Deploy Backend Services to AKS
+name: Backend CD (deploy product & order to AKS)
 
 on:
   workflow_dispatch:
-    inputs:
-      aks_cluster_name:
-        description: 'Name of the AKS Cluster to deploy to'
-        required: true
-        default: 'week9aks'
-      aks_resource_group:
-        description: 'Resource Group of the AKS Cluster'
-        required: true
-        default: 'deakinuni'
-      aks_acr_name:
-        description: 'Name of ACR'
-        required: true
-        default: 'week9acr'
+  push:
+    branches: [ main ]
+
+env:
+  # your ACR + namespace
+  ACR_LOGIN_SERVER: week9acr.azurecr.io
+  IMAGE_TAG: ${{ github.sha }}
+  NS: shop
+  # AKS details
+  AZ_RG: deakinuni
+  AKS_NAME: week9aks
 
 jobs:
-  deploy_backend:
+  deploy:
     runs-on: ubuntu-latest
-    environment: Production
-    
-    outputs:
-      PRODUCT_API_IP: ${{ steps.get_product_ip.outputs.external_ip }}
-      ORDER_API_IP: ${{ steps.get_order_ip.outputs.external_ip }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Log in to Azure
+      - name: Azure login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-          enable-AzPSSession: true
 
-      - name: Set Kubernetes context (get AKS credentials)
+      - name: Get AKS context
         run: |
-          az aks get-credentials --resource-group ${{ github.event.inputs.aks_resource_group }} --name ${{ github.event.inputs.aks_cluster_name }} --overwrite-existing
+          az aks get-credentials --resource-group $AZ_RG --name $AKS_NAME --overwrite-existing
+          kubectl version --client=true
 
-      - name: Attach ACR
+      - name: Ensure namespace exists
         run: |
-          az aks update --name ${{ github.event.inputs.aks_cluster_name }} --resource-group ${{ github.event.inputs.aks_resource_group }} --attach-acr ${{ github.event.inputs.aks_acr_name }}
+          kubectl create namespace $NS --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Deploy Backend Infrastructure (Namespace, ConfigMaps, Secrets, Databases)
+      - name: Apply Kubernetes manifests (db + services + secrets)
         run: |
-          echo "Deploying backend infrastructure..."
-          cd k8s/
-          kubectl apply -f configmaps.yaml
-          kubectl apply -f secrets.yaml
-          kubectl apply -f product-db.yaml
-          kubectl apply -f order-db.yaml
+          kubectl apply -n $NS -f k8s/secrets.yaml
+          kubectl apply -n $NS -f k8s/product-db.yaml
+          kubectl apply -n $NS -f k8s/order-db.yaml
+          kubectl apply -n $NS -f k8s/product-service.yaml
+          kubectl apply -n $NS -f k8s/order-service.yaml
 
-      - name: Deploy Backend Microservices (Product, Order)
+      # Pin deployments to the exact commit SHA images that CI built
+      - name: Set backend images to exact SHA
         run: |
-          echo "Deploying backend microservices..."
-          cd k8s/
-          kubectl apply -f product-service.yaml
-          kubectl apply -f order-service.yaml
-      
-      - name: Wait for Backend LoadBalancer IPs
+          kubectl set image deploy/product-service -n $NS product=${{ env.ACR_LOGIN_SERVER }}/product_service:${{ env.IMAGE_TAG }}
+          kubectl set image deploy/order-service   -n $NS order=${{ env.ACR_LOGIN_SERVER }}/order_service:${{ env.IMAGE_TAG }}
+
+      - name: Wait for rollout (product & order)
         run: |
-          echo "Waiting for Product, Order LoadBalancer IPs to be assigned (up to 5 minutes)..."
-          PRODUCT_IP=""
-          ORDER_IP=""
-          
-          for i in $(seq 1 60); do
-            echo "Attempt $i/60 to get IPs..."
-            PRODUCT_IP=$(kubectl get service product-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-            ORDER_IP=$(kubectl get service order-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          kubectl rollout status deploy/product-service -n $NS --timeout=180s
+          kubectl rollout status deploy/order-service   -n $NS --timeout=180s
 
-            if [[ -n "$PRODUCT_IP" && -n "$ORDER_IP" ]]; then
-              echo "All backend LoadBalancer IPs assigned!"
-              echo "Product Service IP: $PRODUCT_IP"
-              echo "Order Service IP: $ORDER_IP"
-              break
-            fi
-            sleep 5 # Wait 5 seconds before next attempt
-          done
-          
-          if [[ -z "$PRODUCT_IP" || -z "$ORDER_IP" ]]; then
-            echo "Error: One or more LoadBalancer IPs not assigned after timeout."
-            exit 1 # Fail the job if IPs are not obtained
-          fi
-          
-          # These are environment variables for subsequent steps in the *same job*
-          # And used to set the job outputs
-          echo "PRODUCT_IP=$PRODUCT_IP" >> $GITHUB_ENV
-          echo "ORDER_IP=$ORDER_IP" >> $GITHUB_ENV
+      - name: Show service IPs
+        run: kubectl get svc -n $NS -o wide
 
-      - name: Capture Product Service IP for Workflow Output
-        id: get_product_ip
-        run: echo "external_ip=${{ env.PRODUCT_IP }}" >> $GITHUB_OUTPUT
-      
-      - name: Capture Order Service IP for Workflow Output
-        id: get_order_ip
-        run: echo "external_ip=${{ env.ORDER_IP }}" >> $GITHUB_OUTPUT
-
-      - name: Logout from Azure
-        run: az logout
+      - name: Smoke test product & order
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROD_IP=$(kubectl get svc product-service -n $NS -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          ORDER_IP=$(kubectl get svc order-service   -n $NS -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "PRODUCT → http://$PROD_IP:8000"
+          echo "ORDER   → http://$ORDER_IP:8001"
+          curl -sS -I "http://$PROD_IP:8000"  | head -n1
+          curl -sS -I "http://$ORDER_IP:8001" | head -n1

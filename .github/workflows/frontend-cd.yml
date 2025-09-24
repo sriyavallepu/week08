@@ -1,95 +1,53 @@
-name: CD - Deploy Frontend to AKS
+name: Frontend CD (deploy UI to AKS)
 
 on:
   workflow_dispatch:
-    inputs:
-      product_api_ip:
-        description: "External IP of Product Service (e.g., http://4.254.8.38:8000)"
-        required: true
-      order_api_ip:
-        description: "External IP of Order Service (e.g., http://4.254.37.55:8001)"
-        required: true
-      aks_cluster_name:
-        description: "Name of the AKS Cluster to deploy to"
-        required: true
-      aks_resource_group:
-        description: "Resource Group of the AKS Cluster"
-        required: true
-
-  workflow_call:
-    inputs:
-      product_api_ip:      { type: string, required: true }
-      order_api_ip:        { type: string, required: true }
-      aks_cluster_name:    { type: string, required: true }
-      aks_resource_group:  { type: string, required: true }
+  push:
+    branches: [ main ]
 
 env:
   ACR_LOGIN_SERVER: week9acr.azurecr.io
+  IMAGE_TAG: ${{ github.sha }}
+  NS: shop
+  AZ_RG: deakinuni
+  AKS_NAME: week9aks
 
 jobs:
-  deploy_frontend:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Azure Login
+      - name: Azure login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Set AKS context
-        uses: azure/aks-set-context@v4
-        with:
-          resource-group: ${{ inputs.aks_resource_group }}
-          cluster-name: ${{ inputs.aks_cluster_name }}
+      - name: Get AKS context
+        run: |
+          az aks get-credentials --resource-group $AZ_RG --name $AKS_NAME --overwrite-existing
 
-      - name: Inject Backend IPs into frontend/main.js
+      - name: Apply frontend manifest
+        run: |
+          kubectl apply -n $NS -f k8s/frontend.yaml
+
+      # Pin to the exact SHA tag built in CI
+      - name: Set frontend image to exact SHA
+        run: |
+          kubectl set image deploy/frontend -n $NS frontend=${{ env.ACR_LOGIN_SERVER }}/frontend:${{ env.IMAGE_TAG }}
+
+      - name: Wait for rollout (frontend)
+        run: kubectl rollout status deploy/frontend -n $NS --timeout=180s
+
+      - name: Show frontend service IP
+        run: kubectl get svc frontend -n $NS -o wide
+
+      - name: Smoke test UI
         shell: bash
         run: |
-          set -e
-          FILE="frontend/main.js"
-          echo "Working dir: $(pwd)"
-          ls -la frontend || true
-          if [[ ! -f "$FILE" ]]; then
-            echo "ERROR: $FILE not found"
-            exit 1
-          fi
-          sed -i "s|_PRODUCT_API_URL_|${{ inputs.product_api_ip }}|g" "$FILE" || true
-          sed -i "s|_ORDER_API_URL_|${{ inputs.order_api_ip }}|g" "$FILE" || true
-          if grep -qE '^const[[:space:]]+PRODUCT_IP' "$FILE"; then
-            sed -i -E 's|^const[[:space:]]+PRODUCT_IP.*|const PRODUCT_IP = "'"${{ inputs.product_api_ip }}"'";|' "$FILE"
-          else
-            echo 'const PRODUCT_IP = "'"${{ inputs.product_api_ip }}"'";' >> "$FILE"
-          fi
-          if grep -qE '^const[[:space:]]+ORDER_IP' "$FILE"; then
-            sed -i -E 's|^const[[:space:]]+ORDER_IP.*|const ORDER_IP = "'"${{ inputs.order_api_ip }}"'";|' "$FILE"
-          else
-            echo 'const ORDER_IP = "'"${{ inputs.order_api_ip }}"'";' >> "$FILE"
-          fi
-          echo "Final values (non-fatal grep):"
-          grep -nE 'PRODUCT_IP|ORDER_IP' "$FILE" || true
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to ACR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.ACR_LOGIN_SERVER }}
-          username: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
-          password: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
-
-      - name: Build & push FRONTEND image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
-          push: true
-          tags: ${{ env.ACR_LOGIN_SERVER }}/frontend:latest
-
-      - name: Deploy Frontend to AKS
-        run: |
-          kubectl apply -f k8s/frontend.yaml
-          kubectl rollout status deploy/frontend --timeout=180s
+          set -euo pipefail
+          FRONT=$(kubectl get svc frontend -n $NS -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "FRONTEND → http://$FRONT"
+          curl -sS -I "http://$FRONT" | head -n1

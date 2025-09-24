@@ -19,10 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # ✅ Use your new ACR everywhere
+  
   ACR_LOGIN_SERVER: week9acr.azurecr.io
   ACR_NAME: week9acr
-  # ✅ Tag images with the commit SHA (reproducible)
+ 
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
