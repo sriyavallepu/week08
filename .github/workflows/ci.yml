@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/**"
+  push:
+    branches: [ main ]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: product_service
+            path: backend/product_service
+          - name: order_service
+            path: backend/order_service
+          - name: frontend
+            path: frontend
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Node setup only helps if the service uses Node (frontend or a Node backend)
+      - name: Setup Node (if package.json exists)
+        if: hashFiles(format('{0}/package.json', matrix.path)) != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: "npm"
+          cache-dependency-path: "${{ matrix.path }}/package-lock.json"
+
+      - name: Install deps & run tests (Node projects)
+        if: hashFiles(format('{0}/package.json', matrix.path)) != ''
+        run: |
+          cd "${{ matrix.path }}"
+          npm ci
+          npm test --if-present
+
+      # Optional: light Docker build to ensure Dockerfiles don’t break
+      - name: Docker build (if Dockerfile exists)
+        if: hashFiles(format('{0}/Dockerfile', matrix.path)) != ''
+        run: |
+          docker build -t temp/${{ matrix.name }}:ci "${{ matrix.path }}"
+
+      # Absolutely NO cloud auth / kubectl here (PR-safe & hermetic)
