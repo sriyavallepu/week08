@@ -30,12 +30,8 @@ jobs:
       - name: Get AKS context
         run: |
           az aks get-credentials --resource-group $AZ_RG --name $AKS_NAME --overwrite-existing
-          kubectl version --client=true
 
-      - name: Ensure namespace exists
-        run: |
-          kubectl create namespace $NS --dry-run=client -o yaml | kubectl apply -f -
-
+      # 👇 Paste here
       - name: Apply Kubernetes manifests (db + services + secrets)
         run: |
           kubectl apply -n $NS -f k8s/secrets.yaml
