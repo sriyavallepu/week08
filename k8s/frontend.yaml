@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
       - name: frontend-container
-        image: week8regisry.azurecr.io/frontend:latest
+        image: week9acr.azurecr.io/frontend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 80

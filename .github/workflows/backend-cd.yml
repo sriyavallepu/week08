@@ -6,7 +6,7 @@ on:
       aks_cluster_name:
         description: 'Name of the AKS Cluster to deploy to'
         required: true
-        default: 'sit722cluster'
+        default: 'week9aks'
       aks_resource_group:
         description: 'Resource Group of the AKS Cluster'
         required: true
@@ -14,7 +14,7 @@ on:
       aks_acr_name:
         description: 'Name of ACR'
         required: true
-        default: 'week8regisry'
+        default: 'week9acr'
 
 jobs:
   deploy_backend:

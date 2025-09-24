@@ -24,7 +24,7 @@ on:
       aks_resource_group:  { type: string, required: true }
 
 env:
-  ACR_LOGIN_SERVER: week8regisry.azurecr.io
+  ACR_LOGIN_SERVER: week9acr.azurecr.io
 
 jobs:
   deploy_frontend:
